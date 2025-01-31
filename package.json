@@ -1,0 +1,30 @@
+{
+    "name": "audiohelper",
+    "version": "1.0.0",
+    "description": "Simple library for playing sound effects with the web audio API.",
+    "keywords": ["helpers", "library", "ape apps", "module"],
+    "homepage": "https://www.ape-apps.com",
+    "bugs": {
+        "email": "support@ape-apps.com"
+    },
+    "author": {
+        "name": "Ape Apps",
+        "email": "support@ape-apps.com",
+        "url": "https://www.ape-apps.com"
+    },
+    "funding": {
+        "type": "patreon",
+        "url": "https://www.patreon.com/apeapps"
+    },
+    "license": "Apache-2.0",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/bastecklein/audiohelper"
+    },
+    "main": "audiohelper.js",
+    "config": {},
+    "dependencies": {},
+    "devDependencies": {},
+    "private": false,
+    "type": "module"
+}
