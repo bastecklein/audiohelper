@@ -86,6 +86,10 @@ export async function playAudio(path, options) {
             }
         } else {
             buffer = await audioContext.decodeAudioData(path);
+
+            if(options && options.tag) {
+                retainedBuffers[options.tag] = buffer;
+            }
         }
         
     } else {
