@@ -1,8 +1,8 @@
 {
     "name": "audiohelper",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "Simple library for playing sound effects with the web audio API.",
-    "keywords": ["helpers", "library", "ape apps", "module"],
+    "keywords": ["helpers", "library", "ape apps", "module", "audio"],
     "homepage": "https://www.ape-apps.com",
     "bugs": {
         "email": "support@ape-apps.com"

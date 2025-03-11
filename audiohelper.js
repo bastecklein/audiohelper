@@ -79,33 +79,46 @@ export async function playAudio(path, options) {
 
     let buffer = null;
 
-    if(typeof path == "string") {
-        buffer = await getFile(path);
+    if(path instanceof ArrayBuffer) {
+        if(options && options.tag) {
+            if(retainedBuffers[options.tag]) {
+                buffer = retainedBuffers[options.tag];
+            }
+        } else {
+            buffer = await audioContext.decodeAudioData(path);
+        }
+        
     } else {
-
-        if(Array.isArray(path)) {
-            const uint = new Uint8Array(path);
-
-            if(uint && uint.buffer) {
-                if(options && options.tag) {
-                    if(retainedBuffers[options.tag]) {
-                        buffer = retainedBuffers[options.tag];
-                    }
-                }
-        
-                if(!buffer) {
-                    const ab = uint.buffer;
-        
-                    buffer = await audioContext.decodeAudioData(ab);
-        
+        if(typeof path == "string") {
+            buffer = await getFile(path);
+        } else {
+    
+            if(Array.isArray(path)) {
+                const uint = new Uint8Array(path);
+    
+                if(uint && uint.buffer) {
                     if(options && options.tag) {
-                        retainedBuffers[options.tag] = buffer;
+                        if(retainedBuffers[options.tag]) {
+                            buffer = retainedBuffers[options.tag];
+                        }
+                    }
+            
+                    if(!buffer) {
+                        const ab = uint.buffer;
+            
+                        buffer = await audioContext.decodeAudioData(ab);
+            
+                        if(options && options.tag) {
+                            retainedBuffers[options.tag] = buffer;
+                        }
                     }
                 }
             }
+    
         }
-
     }
+
+    
 
     if(!buffer) {
         return;
