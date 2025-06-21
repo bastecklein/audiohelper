@@ -1,6 +1,6 @@
 {
     "name": "audiohelper",
-    "version": "1.0.1",
+    "version": "1.1.0",
     "description": "Simple library for playing sound effects with the web audio API.",
     "keywords": ["helpers", "library", "ape apps", "module", "audio"],
     "homepage": "https://www.ape-apps.com",
@@ -24,7 +24,13 @@
     "main": "audiohelper.js",
     "config": {},
     "dependencies": {},
-    "devDependencies": {},
+    "devDependencies": {
+        "@eslint/css": "*",
+        "@eslint/js": "*",
+        "@eslint/json": "*",
+        "eslint": "*",
+        "globals": "*"
+    },
     "private": false,
     "type": "module"
 }
