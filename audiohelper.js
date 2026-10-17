@@ -2,9 +2,133 @@ if(typeof window !== "undefined") {
     window.addEventListener("pointerdown", winPointerDown);
 }
 
-let retainedBuffers = {};
+/*
+    Decoded audio buffers, keyed by URL or by a caller-supplied `tag`.
+
+    **This used to be an unbounded plain object, and that is a real leak for anything
+    longer than a sound effect.** A two-minute stereo track decodes to roughly 42 MB of
+    float32 PCM, so a music playlist retained the whole album in memory for the life of
+    the page. The cache is now a size-bounded LRU: callers can still get the decode-once
+    behaviour that makes short effects cheap, a long track is never the thing that fills
+    the budget, and an unaware caller cannot grow it forever. `retain: false` on
+    `playAudio` opts out entirely for a track that should not occupy the budget at all.
+*/
+const DEFAULT_AUDIO_CACHE_LIMIT = 32 * 1024 * 1024;
+
+let retainedBuffers = new Map();
+let retainedBufferBytes = 0;
+let audioCacheLimit = DEFAULT_AUDIO_CACHE_LIMIT;
+
 let audioContext = null;
 let fakeiOSElement = null;
+
+function audioBufferBytes(buffer) {
+    return (buffer.length || 0) * (buffer.numberOfChannels || 0) * Float32Array.BYTES_PER_ELEMENT;
+}
+
+/** Read a retained buffer and move it to the most-recently-used end of the LRU. */
+function takeRetainedBuffer(key) {
+    if(!retainedBuffers.has(key)) {
+        return null;
+    }
+
+    const buffer = retainedBuffers.get(key);
+    retainedBuffers.delete(key);
+    retainedBuffers.set(key, buffer);
+
+    return buffer;
+}
+
+function evictOldestRetainedBuffer() {
+    const oldestKey = retainedBuffers.keys().next().value;
+    const oldest = retainedBuffers.get(oldestKey);
+
+    retainedBuffers.delete(oldestKey);
+    retainedBufferBytes -= audioBufferBytes(oldest);
+}
+
+function retainBuffer(key, buffer) {
+    const bytes = audioBufferBytes(buffer);
+
+    // A single buffer over the whole budget is not worth evicting everything else for.
+    if(bytes > audioCacheLimit) {
+        releaseCachedAudio(key);
+        return;
+    }
+
+    if(retainedBuffers.has(key)) {
+        retainedBufferBytes -= audioBufferBytes(retainedBuffers.get(key));
+        retainedBuffers.delete(key);
+    }
+
+    while(retainedBuffers.size > 0 && retainedBufferBytes + bytes > audioCacheLimit) {
+        evictOldestRetainedBuffer();
+    }
+
+    retainedBuffers.set(key, buffer);
+    retainedBufferBytes += bytes;
+}
+
+/**
+ * Drop one decoded buffer from the cache.
+ *
+ * Safe while the buffer is playing: the `AudioBufferSourceNode` keeps its own reference,
+ * so playback continues and the memory is released when the source ends.
+ *
+ * @param {string} key  the URL or `tag` it was retained under.
+ * @returns {boolean} whether something was cached under that key.
+ */
+export function releaseCachedAudio(key) {
+    if(!retainedBuffers.has(key)) {
+        return false;
+    }
+
+    retainedBufferBytes -= audioBufferBytes(retainedBuffers.get(key));
+    retainedBuffers.delete(key);
+
+    return true;
+}
+
+/** Drop every decoded buffer. Playing sounds are unaffected. */
+export function clearAudioCache() {
+    retainedBuffers.clear();
+    retainedBufferBytes = 0;
+}
+
+/**
+ * Change the decoded-audio cache budget, in bytes.
+ *
+ * Zero disables retention without changing any call sites. A non-finite or negative
+ * value restores the default. Lowering the limit evicts least-recently-used buffers
+ * immediately.
+ *
+ * @param {number} bytes
+ * @returns {number} the limit now in effect.
+ */
+export function setAudioCacheLimit(bytes) {
+    const limit = Number(bytes);
+
+    audioCacheLimit = Number.isFinite(limit) && limit >= 0 ? Math.floor(limit) : DEFAULT_AUDIO_CACHE_LIMIT;
+
+    while(retainedBuffers.size > 0 && retainedBufferBytes > audioCacheLimit) {
+        evictOldestRetainedBuffer();
+    }
+
+    return audioCacheLimit;
+}
+
+/**
+ * The cache's current size, for diagnostics and tests.
+ *
+ * @returns {{entries: number, bytes: number, limit: number}}
+ */
+export function getAudioCacheStats() {
+    return {
+        entries: retainedBuffers.size,
+        bytes: retainedBufferBytes,
+        limit: audioCacheLimit
+    };
+}
 
 let listenerPosition = { x: 0, y: 0, z: 0 };
 let activeSounds = new Set();
@@ -97,55 +221,54 @@ export async function playAudio(path, options) {
 
     let buffer = null;
 
+    if(!options) {
+        options = {};
+    }
+
+    /*
+        `retain: false` is the explicit opt-out for long tracks: skip both the cache read
+        and the cache write. The default is `true`, which keeps the decode-once behaviour
+        short sound effects have always had -- now under the LRU budget rather than
+        forever.
+    */
+    const retain = options.retain !== false;
+
     if(path instanceof ArrayBuffer) {
-        if(options && options.tag) {
-            if(retainedBuffers[options.tag]) {
-                buffer = retainedBuffers[options.tag];
-            }
-        } else {
+        if(retain && options.tag) {
+            buffer = takeRetainedBuffer(options.tag);
+        }
+
+        if(!buffer) {
             buffer = await audioContext.decodeAudioData(path);
 
-            if(options && options.tag) {
-                retainedBuffers[options.tag] = buffer;
+            if(retain && options.tag) {
+                retainBuffer(options.tag, buffer);
             }
         }
-        
-    } else {
-        if(typeof path == "string") {
-            buffer = await getFile(path);
-        } else {
-    
-            if(Array.isArray(path)) {
-                const uint = new Uint8Array(path);
-    
-                if(uint && uint.buffer) {
-                    if(options && options.tag) {
-                        if(retainedBuffers[options.tag]) {
-                            buffer = retainedBuffers[options.tag];
-                        }
-                    }
-            
-                    if(!buffer) {
-                        const ab = uint.buffer;
-            
-                        buffer = await audioContext.decodeAudioData(ab);
-            
-                        if(options && options.tag) {
-                            retainedBuffers[options.tag] = buffer;
-                        }
-                    }
+    } else if(typeof path == "string") {
+        buffer = await getFile(path, retain);
+    } else if(Array.isArray(path)) {
+        const uint = new Uint8Array(path);
+
+        if(uint && uint.buffer) {
+            if(retain && options.tag) {
+                buffer = takeRetainedBuffer(options.tag);
+            }
+
+            if(!buffer) {
+                const ab = uint.buffer;
+
+                buffer = await audioContext.decodeAudioData(ab);
+
+                if(retain && options.tag) {
+                    retainBuffer(options.tag, buffer);
                 }
             }
-    
         }
     }
 
     if(!buffer) {
         return;
-    }
-
-    if(!options) {
-        options = {};
     }
 
     tryResumeAudio();
@@ -328,7 +451,7 @@ function gooseUpAudioContext() {
     }
 }
 
-async function getFile(path) {
+async function getFile(path, retain) {
 
     if(!audioContext) {
         gooseUpAudioContext();
@@ -338,15 +461,26 @@ async function getFile(path) {
         return null;
     }
 
-    if(retainedBuffers[path]) {
-        return retainedBuffers[path];
+    if(retain) {
+        const cached = takeRetainedBuffer(path);
+
+        if(cached) {
+            return cached;
+        }
     }
 
     const response = await fetch(path);
+
+    if(!response.ok) {
+        throw new Error("audiohelper: could not load " + path + " (" + response.status + ")");
+    }
+
     const arrayBuffer = await response.arrayBuffer();
     const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
-    retainedBuffers[path] = audioBuffer;
+    if(retain) {
+        retainBuffer(path, audioBuffer);
+    }
 
     return audioBuffer;
 }
@@ -399,5 +533,9 @@ export default {
     getAudioContext,
     tryResumeAudio,
     setListenerPosition,
-    setListenerOrientation
+    setListenerOrientation,
+    releaseCachedAudio,
+    clearAudioCache,
+    setAudioCacheLimit,
+    getAudioCacheStats
 };
