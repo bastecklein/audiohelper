@@ -674,6 +674,10 @@ function StreamObject(audio, sourceNode, gainNode) {
                 // Already disconnected.
             }
         }
+
+        if(so.audio.parentNode && so.audio.parentNode.removeChild) {
+            so.audio.parentNode.removeChild(so.audio);
+        }
     };
 }
 
@@ -753,6 +757,15 @@ function createAudioElement(path, options) {
 
     audio.preload = "auto";
     audio.src = path;
+
+    // Chrome can abort play() with "the media was removed from the document"
+    // for an element that has no document owner. Keep the element attached,
+    // hidden, for as long as it is playing; StreamObject.destroy() removes it.
+    if(typeof document !== "undefined" && document.body && document.body.appendChild) {
+        audio.style.display = "none";
+        audio.setAttribute("aria-hidden", "true");
+        document.body.appendChild(audio);
+    }
 
     return audio;
 }

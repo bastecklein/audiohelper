@@ -1,5 +1,12 @@
 # audiohelper changelog
 
+## 1.3.2
+
+- `playStream` keeps its `<audio>` element attached to the document (hidden)
+  while playing, and removes it on stop/destroy. Chrome could abort `play()`
+  with `AbortError: The play() request was interrupted because the media was
+  removed from the document` for a detached streaming element.
+
 ## 1.3.1
 
 - A load/decode error during the initial `playStream` play is no longer turned

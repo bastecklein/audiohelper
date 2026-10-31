@@ -35,6 +35,9 @@ class FakeAudio {
         this.listeners = {};
         this.playCalls = 0;
         this.loadCalls = 0;
+        this.style = {};
+        this.attributes = {};
+        this.parentNode = null;
 
         audios.push(this);
     }
@@ -78,6 +81,12 @@ class FakeAudio {
         if(name === "src") {
             this.src = null;
         }
+
+        delete this.attributes[name];
+    }
+
+    setAttribute(name, value) {
+        this.attributes[name] = value;
     }
 
     addEventListener(name, fn) {
@@ -201,6 +210,35 @@ describe('audiohelper streaming: basic playback', () => {
     it('returns undefined for an empty path', async() => {
         assert.equal(await playStream(''), undefined);
         assert.equal(audios.length, 0);
+    });
+
+    it('keeps the stream element in the document while playing', async() => {
+        const appended = [];
+        const body = {
+            appendChild: function(element) {
+                element.parentNode = body;
+                appended.push(element);
+            },
+            removeChild: function(element) {
+                element.parentNode = null;
+            }
+        };
+
+        globalThis.document = { body };
+
+        try {
+            const handle = await playStream('music/a.mp3');
+
+            assert.equal(appended.length, 1);
+            assert.equal(audios[0].parentNode, body);
+            assert.equal(audios[0].style.display, 'none');
+
+            handle.stop();
+
+            assert.equal(audios[0].parentNode, null);
+        } finally {
+            delete globalThis.document;
+        }
     });
 
     it('supports pause, resume, seek, loop and duration', async() => {
