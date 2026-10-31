@@ -384,6 +384,335 @@ export async function playAudio(path, options) {
     return so;
 }
 
+/**
+ * Play a streaming source through an HTMLAudioElement.
+ *
+ * `playAudio` decodes the whole file into an AudioBuffer, which is right for
+ * short effects and wrong for a multi-minute music track: the decoded PCM can be
+ * tens of megabytes, and there is no pause, resume or seek. `playStream` keeps
+ * the browser's streaming pipeline and routes the element through Web Audio so
+ * the caller still gets a gain node for volume and fades.
+ *
+ * @param {string} path
+ * @param {object} [options]
+ * @param {number} [options.volume=1]
+ * @param {boolean} [options.loop=false]
+ * @param {number} [options.startAt=0] seconds
+ * @param {string} [options.tag] value passed to the callbacks
+ * @param {function} [options.callback] called with `tag` when the track ends
+ * @param {function} [options.errorCallback] called with `(event, tag)` on error
+ * @param {boolean} [options.crossOrigin] force CORS mode for a remote URL
+ * @returns {Promise<object|undefined>} handle, or undefined if no audio element
+ */
+export async function playStream(path, options) {
+    if(!path) {
+        return;
+    }
+
+    if(!options) {
+        options = {};
+    }
+
+    if(!audioContext) {
+        gooseUpAudioContext();
+    }
+
+    tryResumeAudio();
+
+    const audio = createAudioElement(path, options);
+
+    if(!audio) {
+        return;
+    }
+
+    let sourceNode = null;
+    let gainNode = null;
+
+    if(audioContext) {
+        try {
+            sourceNode = audioContext.createMediaElementSource(audio);
+            gainNode = audioContext.createGain();
+            sourceNode.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+        } catch {
+            // A cross-origin element without CORS, or a browser without
+            // MediaElementAudioSourceNode. The element can still play; volume
+            // then falls back to HTMLMediaElement.volume.
+            if(sourceNode) {
+                try {
+                    sourceNode.disconnect();
+                } catch {
+                    // Nothing to disconnect.
+                }
+            }
+
+            sourceNode = null;
+            gainNode = null;
+        }
+    }
+
+    const so = new StreamObject(audio, sourceNode, gainNode);
+
+    so.tag = options.tag || path;
+    so.callback = options.callback || null;
+    so.errorCallback = options.errorCallback || null;
+
+    so.setVolume(options.volume === undefined ? 1 : options.volume);
+    so.setLoop(!!options.loop);
+
+    if(options.startAt) {
+        so.seek(options.startAt);
+    }
+
+    audio.addEventListener("ended", so.onEnded);
+    audio.addEventListener("error", so.onError);
+
+    try {
+        await audio.play();
+        so.blocked = false;
+    } catch(ex) {
+        if(ex && ex.name === "NotAllowedError") {
+            // Autoplay was blocked. The caller can retry so.play() from a
+            // user gesture.
+            so.blocked = true;
+        } else {
+            so.destroy();
+            throw ex;
+        }
+    }
+
+    return so;
+}
+
+function StreamObject(audio, sourceNode, gainNode) {
+    this.audio = audio;
+    this.sourceNode = sourceNode;
+    this.gainNode = gainNode;
+    this.tag = null;
+    this.callback = null;
+    this.errorCallback = null;
+    this.blocked = false;
+    this.wasStopped = false;
+
+    const so = this;
+
+    so.onEnded = function() {
+        if(so.wasStopped) {
+            return;
+        }
+
+        try {
+            if(so.callback) {
+                so.callback(so.tag);
+            }
+        } finally {
+            so.destroy();
+        }
+    };
+
+    so.onError = function(event) {
+        if(so.wasStopped) {
+            return;
+        }
+
+        try {
+            if(so.errorCallback) {
+                so.errorCallback(event, so.tag);
+            }
+        } finally {
+            so.destroy();
+        }
+    };
+
+    so.setVolume = function(vol) {
+        const useVol = clampVolume(vol);
+
+        if(so.gainNode && audioContext) {
+            if(so.gainNode.gain.cancelScheduledValues) {
+                so.gainNode.gain.cancelScheduledValues(audioContext.currentTime);
+            }
+
+            so.gainNode.gain.setValueAtTime(useVol, audioContext.currentTime);
+        } else {
+            so.audio.volume = useVol;
+        }
+    };
+
+    /**
+     * Ramp the volume to `vol` over `duration` milliseconds. Resolves when the
+     * ramp is scheduled to finish. Without Web Audio the change is immediate.
+     */
+    so.fadeTo = function(vol, duration) {
+        const useVol = clampVolume(vol);
+        const ms = Math.max(0, Number(duration) || 0);
+
+        if(!so.gainNode || !audioContext) {
+            so.setVolume(useVol);
+            return Promise.resolve();
+        }
+
+        const now = audioContext.currentTime;
+
+        if(so.gainNode.gain.cancelScheduledValues) {
+            so.gainNode.gain.cancelScheduledValues(now);
+        }
+
+        so.gainNode.gain.setValueAtTime(so.gainNode.gain.value, now);
+        so.gainNode.gain.linearRampToValueAtTime(useVol, now + (ms / 1000));
+
+        if(ms === 0) {
+            return Promise.resolve();
+        }
+
+        return new Promise(function(resolve) {
+            setTimeout(resolve, ms);
+        });
+    };
+
+    so.play = function() {
+        so.wasStopped = false;
+        so.blocked = false;
+
+        const result = so.audio.play();
+
+        if(result && result.catch) {
+            result.catch(function(ex) {
+                if(ex && ex.name === "NotAllowedError") {
+                    so.blocked = true;
+                }
+            });
+        }
+
+        return result;
+    };
+
+    so.pause = function() {
+        so.audio.pause();
+    };
+
+    so.seek = function(time) {
+        const useTime = Number(time);
+
+        if(!Number.isFinite(useTime) || useTime < 0) {
+            return false;
+        }
+
+        try {
+            so.audio.currentTime = useTime;
+            return true;
+        } catch {
+            return false;
+        }
+    };
+
+    so.setLoop = function(loop) {
+        so.audio.loop = !!loop;
+    };
+
+    so.getCurrentTime = function() {
+        return so.audio.currentTime || 0;
+    };
+
+    so.getDuration = function() {
+        return so.audio.duration || 0;
+    };
+
+    so.isPaused = function() {
+        return so.audio.paused;
+    };
+
+    so.stop = function() {
+        so.wasStopped = true;
+        so.destroy();
+    };
+
+    so.destroy = function() {
+        so.audio.removeEventListener("ended", so.onEnded);
+        so.audio.removeEventListener("error", so.onError);
+
+        try {
+            so.audio.pause();
+            so.audio.removeAttribute("src");
+            so.audio.load();
+        } catch {
+            // The element may already be detached.
+        }
+
+        if(so.sourceNode) {
+            try {
+                so.sourceNode.disconnect();
+            } catch {
+                // Already disconnected.
+            }
+        }
+
+        if(so.gainNode) {
+            try {
+                so.gainNode.disconnect();
+            } catch {
+                // Already disconnected.
+            }
+        }
+    };
+}
+
+function clampVolume(vol) {
+    const useVol = Number(vol);
+
+    if(!Number.isFinite(useVol)) {
+        return 1;
+    }
+
+    return Math.min(1, Math.max(0, useVol));
+}
+
+function isCrossOrigin(path) {
+    if(typeof path != "string" || path.length == 0) {
+        return false;
+    }
+
+    if(path.indexOf("data:") === 0 || path.indexOf("blob:") === 0) {
+        return false;
+    }
+
+    if(typeof window === "undefined" || !window.location || !window.location.href) {
+        return false;
+    }
+
+    try {
+        const base = new URL(window.location.href);
+
+        return new URL(path, base).origin !== base.origin;
+    } catch {
+        return false;
+    }
+}
+
+function createAudioElement(path, options) {
+    let audio = null;
+
+    try {
+        audio = new Audio();
+    } catch {
+        if(typeof document !== "undefined" && document.createElement) {
+            audio = document.createElement("audio");
+        }
+    }
+
+    if(!audio) {
+        return null;
+    }
+
+    if(audioContext && (options.crossOrigin || isCrossOrigin(path))) {
+        audio.crossOrigin = "anonymous";
+    }
+
+    audio.preload = "auto";
+    audio.src = path;
+
+    return audio;
+}
+
 export function tryResumeAudio() {
     if(!audioContext) {
         return;
@@ -530,6 +859,7 @@ export function setListenerOrientation(forwardX, forwardY, forwardZ, upX = 0, up
 
 export default {
     playAudio,
+    playStream,
     getAudioContext,
     tryResumeAudio,
     setListenerPosition,

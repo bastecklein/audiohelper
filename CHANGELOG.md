@@ -1,5 +1,11 @@
 # audiohelper changelog
 
+## 1.3.0
+
+- Added `playStream` for long music tracks: an `HTMLAudioElement` routed through
+  Web Audio, with pause/resume/seek, loop, volume, fades, autoplay-block
+  detection, an error callback, and no full-track PCM decode.
+
 ## 1.2.0
 
 - The decoded-audio cache is now a byte-bounded LRU instead of an unbounded map, so a

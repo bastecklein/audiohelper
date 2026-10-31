@@ -1,6 +1,6 @@
 # audiohelper
 
-Simple library for playing sound effects with the web audio API.
+Simple library for playing sound effects and streaming music with the web audio API.
 
 ```json
 "dependencies": {
@@ -84,6 +84,41 @@ getAudioCacheStats();                 // { entries, bytes, limit }
 
 Dropping a buffer is safe while it is playing: the audio source keeps its own reference,
 so playback continues and the memory is released when the sound ends.
+
+## Streaming music
+
+`playAudio` decodes the whole source into memory. For a long music track, use
+`playStream`, which keeps the browser's streaming pipeline and adds
+pause/resume/seek and fades:
+
+```javascript
+import { playStream } from "audiohelper";
+
+const track = await playStream("music/theme.mp3", {
+    volume: 0.6,
+    loop: false,
+    tag: "theme",
+    callback: function() {
+        // The track ended naturally: start the next one.
+    }
+});
+
+track.pause();
+track.play();
+track.seek(30);
+await track.fadeTo(0, 1000);
+track.stop();
+```
+
+The handle matches the useful parts of `playAudio` (`stop`, `setVolume`) and adds
+`play`, `pause`, `seek`, `setLoop`, `getCurrentTime`, `getDuration`, `isPaused`
+and `fadeTo`. Volume is applied through a `GainNode`; if the browser cannot create
+a `MediaElementAudioSourceNode` (or the source is cross-origin without CORS), it
+falls back to `HTMLMediaElement.volume`.
+
+Remote URLs are fetched in CORS mode and must send `Access-Control-Allow-Origin`,
+or Web Audio would receive silence. If autoplay is blocked, the returned handle
+has `blocked === true`; call `track.play()` from a user gesture to retry.
 
 ## Notes
 

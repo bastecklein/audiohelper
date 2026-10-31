@@ -50,3 +50,41 @@ That is what makes the management API safe to call on a scene change.
 clean on `audiohelper.js` and the test. The test fakes only `AudioContext` and `fetch`, so
 the LRU, the opt-out, the limit changes and the tagged-buffer path are the real code. No
 browser has played audio in this environment.
+
+## 2026-10-31 — Long music uses `playStream`, not a decoded `AudioBuffer`
+
+**Decided:** added `playStream(path, options)`, which plays through an
+`HTMLAudioElement` routed into Web Audio via `MediaElementAudioSourceNode`. It returns a
+handle with `play`, `pause`, `seek`, `setLoop`, `setVolume`, `fadeTo`, `getCurrentTime`,
+`getDuration`, `isPaused` and `stop`, plus `blocked` when autoplay was refused and an
+`errorCallback` for failures after playback starts. It does not use the decoded-audio
+cache. `playAudio` is unchanged and remains the call for short effects.
+
+**Why `playAudio` is the wrong transport for a song:** it fetches and decodes the entire
+file into an `AudioBuffer` before it can start. A four-minute stereo track at 44.1 kHz is
+roughly **40 MB of float32 PCM**, and the buffer has to exist even with `retain: false`,
+which only stops it being cached. That is a large allocation on a phone and adds a decode
+pause at every track start. An element-backed stream lets the browser fetch and buffer
+incrementally, and it brings pause/resume/seek for free -- operations an `AudioBufferSource`
+cannot do once started. Routing the element through a `GainNode` keeps the volume/fade API
+consistent with `playAudio` and leaves the door open for a category bus later.
+
+**Why keep both APIs rather than replacing `playAudio`:** the decode-once path is a real
+win for repeated short effects, which is what the cache and the existing call sites were
+built around. A stream has no decoded buffer to reuse and pays the browser's media
+pipeline cost per element, so it is the wrong default for a click. The split is by
+lifetime: effects are short and repeated, music is long and one-shot.
+
+**Known limits, recorded rather than hidden:** remote URLs are fetched in CORS mode; a
+server without `Access-Control-Allow-Origin` will fail instead of producing a silent
+tainted stream. If `createMediaElementSource` is unavailable or refuses the element,
+volume falls back to `HTMLMediaElement.volume` and fades become immediate. Autoplay
+blocked by the browser is reported on the handle instead of thrown, so a caller can retry
+from a gesture. None of this has run on a real browser or device yet; the tests fake the
+element and Web Audio nodes, and `TODO.md` records the device pass as OPEN.
+
+**Verified:** `npm test` **24 passing, 0 failing** (12 existing cache tests plus 12 new
+`test/stream.test.mjs` tests); ESLint clean on `audiohelper.js` and the new test. The tests
+cover the handle lifecycle, volume clamping, fades, pause/resume/seek, natural end versus
+explicit stop, error teardown, blocked autoplay retry, the element-volume fallback and CORS
+selection. No browser has played audio in this environment.
