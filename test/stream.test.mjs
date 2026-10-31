@@ -18,6 +18,8 @@ globalThis.window = {
 let audios = [];
 let gains = [];
 let playResult = null;
+let pendingPlay = null;
+let failMediaError = false;
 let failMediaSource = false;
 
 class FakeAudio {
@@ -39,6 +41,18 @@ class FakeAudio {
 
     play() {
         this.playCalls++;
+
+        if(failMediaError) {
+            this.error = { code: 4, message: "no source" };
+
+            return Promise.reject({ name: "NotSupportedError" });
+        }
+
+        if(pendingPlay) {
+            this.paused = false;
+
+            return pendingPlay;
+        }
 
         if(playResult) {
             const rejection = playResult;
@@ -166,6 +180,8 @@ beforeEach(function() {
     audios = [];
     gains = [];
     playResult = null;
+    pendingPlay = null;
+    failMediaError = false;
     failMediaSource = false;
 });
 
@@ -305,6 +321,54 @@ describe('audiohelper streaming: autoplay', () => {
 
         assert.equal(handle.blocked, false);
         assert.equal(audios[0].playCalls, 2);
+    });
+});
+
+describe('audiohelper streaming: media errors', () => {
+    it('surfaces the media error instead of masking it as AbortError', async() => {
+        failMediaError = true;
+
+        let errorCallbackCalled = false;
+
+        await assert.rejects(
+            playStream('music/bad.mp3', {
+                errorCallback: function() {
+                    errorCallbackCalled = true;
+                }
+            }),
+            function(err) {
+                return err.name === 'MediaError' && err.code === 4;
+            }
+        );
+
+        assert.equal(errorCallbackCalled, false, 'the load error is thrown to the caller, not the error callback');
+    });
+
+    it('does not pause the element when it errors before play settles', async() => {
+        let rejectPlay = null;
+
+        pendingPlay = new Promise(function(resolve, reject) {
+            rejectPlay = reject;
+        });
+
+        const promise = playStream('music/bad.mp3');
+
+        await Promise.resolve();
+
+        const audio = audios[0];
+
+        audio.error = { code: 4, message: 'no source' };
+        audio.emit('error');
+
+        assert.equal(audio.paused, false, 'the error handler must not pause a pending play()');
+
+        rejectPlay({ name: 'AbortError' });
+
+        await assert.rejects(promise, function(err) {
+            return err.name === 'MediaError';
+        });
+
+        assert.equal(audio.paused, true, 'the element is destroyed after play rejects');
     });
 });
 

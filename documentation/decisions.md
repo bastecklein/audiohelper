@@ -88,3 +88,29 @@ element and Web Audio nodes, and `TODO.md` records the device pass as OPEN.
 cover the handle lifecycle, volume clamping, fades, pause/resume/seek, natural end versus
 explicit stop, error teardown, blocked autoplay retry, the element-volume fallback and CORS
 selection. No browser has played audio in this environment.
+
+## 2026-10-31 — A load error is reported as a media error, not a masked AbortError
+
+**Decided:** `StreamObject.onError` now records `audio.error` and returns while the
+initial `play()` is still pending (`so.started === false`). It no longer calls
+`destroy()`, which paused the element and made the pending `play()` reject with
+`AbortError: The play() request was interrupted by a call to pause()`. After a
+successful start, the existing error callback and teardown behaviour is unchanged.
+`playStream` maps `audio.error.code` to a `MediaError` with a readable message and
+throws it to the caller.
+
+**Why:** the old error handler hid the only useful information. A media element that
+fires `error` while `play()` is pending is telling us that the source failed to load
+or decode; pausing it converts that into an abort with no code, no URL and no cause.
+The first symptom reported by a host was therefore "the music never plays" plus an
+`AbortError`, which points at the wrong layer. Keeping the pending play alive lets the
+browser settle it, and reading `audio.error` turns it into
+`source not supported` / `decode error` / `network error` / `aborted`. Errors that
+happen after playback has started still go through `errorCallback` and teardown, so the
+normal lifecycle is unchanged.
+
+**Verified:** `npm test` **26 passing, 0 failing** (24 previous plus two media-error
+tests); ESLint clean. One test makes `play()` pend and emits `error` first, asserting the
+element is not paused; the other asserts the rejected value is a `MediaError` with code
+4 and that the error callback is not invoked for a load failure. No browser has played
+audio in this environment.

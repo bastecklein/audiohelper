@@ -469,6 +469,7 @@ export async function playStream(path, options) {
 
     try {
         await audio.play();
+        so.started = true;
         so.blocked = false;
     } catch(ex) {
         if(ex && ex.name === "NotAllowedError") {
@@ -476,8 +477,14 @@ export async function playStream(path, options) {
             // user gesture.
             so.blocked = true;
         } else {
+            const mediaError = describeMediaError(audio, path);
+
+            if(mediaError) {
+                console.error("audiohelper: could not play stream", path, mediaError);
+            }
+
             so.destroy();
-            throw ex;
+            throw mediaError || ex;
         }
     }
 
@@ -493,6 +500,8 @@ function StreamObject(audio, sourceNode, gainNode) {
     this.errorCallback = null;
     this.blocked = false;
     this.wasStopped = false;
+    this.started = false;
+    this.mediaError = null;
 
     const so = this;
 
@@ -512,6 +521,18 @@ function StreamObject(audio, sourceNode, gainNode) {
 
     so.onError = function(event) {
         if(so.wasStopped) {
+            return;
+        }
+
+        /*
+            An error during the initial play() is a load/decode failure. Do not
+            pause here: that turns the pending play() promise into an
+            "AbortError: interrupted by a call to pause()" and hides the real
+            media error. Record it and let the play() rejection carry it out.
+        */
+        if(!so.started) {
+            so.mediaError = so.audio.error;
+
             return;
         }
 
@@ -656,8 +677,31 @@ function StreamObject(audio, sourceNode, gainNode) {
     };
 }
 
-function clampVolume(vol) {
-    const useVol = Number(vol);
+function describeMediaError(audio, path) {
+    const error = audio && audio.error;
+
+    if(!error) {
+        return null;
+    }
+
+    const messages = {
+        1: "aborted",
+        2: "network error",
+        3: "decode error",
+        4: "source not supported"
+    };
+
+    const message = messages[error.code] || ("media error " + error.code);
+    const mediaError = new Error("audiohelper: could not play " + path + " (" + message + ")");
+
+    mediaError.name = "MediaError";
+    mediaError.code = error.code;
+    mediaError.mediaMessage = error.message;
+
+    return mediaError;
+}
+
+function clampVolume(vol) {    const useVol = Number(vol);
 
     if(!Number.isFinite(useVol)) {
         return 1;

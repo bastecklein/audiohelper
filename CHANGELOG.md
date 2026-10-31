@@ -1,5 +1,12 @@
 # audiohelper changelog
 
+## 1.3.1
+
+- A load/decode error during the initial `playStream` play is no longer turned
+  into `AbortError: interrupted by a call to pause()`. The error handler records
+  the media error and lets `play()` reject with it, so the caller sees
+  `MediaError` with the real code instead of a masked abort.
+
 ## 1.3.0
 
 - Added `playStream` for long music tracks: an `HTMLAudioElement` routed through
